@@ -11,6 +11,10 @@ public class KeyValueStoreServer {
     private Map<Long, Map<String, String>> transactions;
     private long currentTransactionId;
 
+    // Locks for synchronization
+    private final Object datastoreLock = new Object();
+    private final Object transactionsLock = new Object();
+
     // Flag for graceful shutdown
     private volatile boolean isShuttingDown = false;
 
@@ -64,8 +68,10 @@ public class KeyValueStoreServer {
                     switch (command) {
                         // Handle different commands and generate responses
                         case "START":
-                            currentTransactionId++;
-                            transactions.put(currentTransactionId, new HashMap<>(datastore));
+                            synchronized (transactionsLock) {
+                                currentTransactionId++;
+                                transactions.put(currentTransactionId, new HashMap<>(datastore));
+                            }
                             response = "{\"status\":\"Ok\"}";
                             break;
                         case "GET":
@@ -79,24 +85,33 @@ public class KeyValueStoreServer {
                             }
                             break;
                         case "COMMIT":
-                            if (currentTransactionId > 0) {
-                                datastore.putAll(transactions.get(currentTransactionId));
-                                transactions.remove(currentTransactionId);
-                                currentTransactionId--;
-                                response = "{\"status\":\"Ok\"}";
-                            } else {
-                                response = "{\"status\":\"Error\", \"mesg\":\"No active transaction\"}";
+                            synchronized (datastoreLock) {
+                                synchronized (transactionsLock) {
+                                    if (currentTransactionId > 0) {
+                                        datastore.putAll(transactions.get(currentTransactionId));
+                                        transactions.remove(currentTransactionId);
+                                        currentTransactionId--;
+                                        response = "{\"status\":\"Ok\"}";
+                                    } else {
+                                        response = "{\"status\":\"Error\", \"mesg\":\"No active transaction\"}";
+                                    }
+                                }
                             }
                             break;
                         case "ROLLBACK":
-                            if (currentTransactionId > 0) {
-                                datastore.clear();
-                                datastore.putAll(transactions.get(currentTransactionId));
-                                transactions.remove(currentTransactionId);
-                                currentTransactionId--;
-                                response = "{\"status\":\"Ok\"}";
-                            } else {
-                                response = "{\"status\":\"Error\", \"mesg\":\"No active transaction\"}";
+                            synchronized (transactionsLock) {
+                                synchronized (datastoreLock) {
+                                    if (currentTransactionId > 0) {
+                                        Map<String, String> transactionData = transactions.get(currentTransactionId);
+                                        datastore.clear();
+                                        datastore.putAll(transactionData);
+                                        transactions.remove(currentTransactionId);
+                                        currentTransactionId--;
+                                        response = "{\"status\":\"Ok\"}";
+                                    } else {
+                                        response = "{\"status\":\"Error\", \"mesg\":\"No active transaction\"}";
+                                    }
+                                }
                             }
                             break;
                     }
@@ -111,17 +126,21 @@ public class KeyValueStoreServer {
     }
 
     private String getValue(String key) {
-        String value = datastore.get(key);
-        if (value != null) {
-            return "{\"status\":\"Ok\", \"result\":\"" + value + "\"}";
-        } else {
-            return "{\"status\":\"Error\", \"mesg\":\"Key not found\"}";
+        synchronized (datastoreLock) {
+            String value = datastore.get(key);
+            if (value != null) {
+                return "{\"status\":\"Ok\", \"result\":\"" + value + "\"}";
+            } else {
+                return "{\"status\":\"Error\", \"mesg\":\"Key not found\"}";
+            }
         }
     }
 
     private String putValue(String key, String value) {
-        datastore.put(key, value);
-        return "{\"status\":\"Ok\"}";
+        synchronized (datastoreLock) {
+            datastore.put(key, value);
+            return "{\"status\":\"Ok\"}";
+        }
     }
 
     // Method to initiate a graceful shutdown
